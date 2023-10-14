@@ -404,7 +404,6 @@ class DLRM_Net(nn.Module):
         ly = []
         for k, sparse_index_group_batch in enumerate(lS_i):
             sparse_offset_group_batch = lS_o[k]
-
             # embedding lookup
             # We are using EmbeddingBag, which implicitly uses sum operator.
             # The embeddings are represented as tall matrices, with sum
@@ -438,6 +437,8 @@ class DLRM_Net(nn.Module):
 
                 ly.append(QV)
             else:
+                print('sparse_offset_group_batch.device', sparse_offset_group_batch.device)
+                print('emb_l[', k, '].weight.device', emb_l[k].weight.shape, emb_l[k].weight.device)
                 E = emb_l[k]
                 V = E(
                     sparse_index_group_batch,
@@ -447,7 +448,9 @@ class DLRM_Net(nn.Module):
 
                 ly.append(V)
 
-        # print(ly)
+        print('len(ly)', len(ly))
+        print('ly[0].shape', ly[0].shape, ly[0].device)
+        print('ly[1].shape', ly[1].shape, ly[1].device)
         return ly
 
     #  using quantizing functions from caffe2/aten/src/ATen/native/quantized/cpu
@@ -511,7 +514,7 @@ class DLRM_Net(nn.Module):
             return self.distributed_forward(dense_x, lS_o, lS_i)
         elif self.ndevices <= 1:
             # single device run
-            return self.sequential_forward(dense_x, lS_o, lS_i)
+            return self.parallel_forward(dense_x, lS_o, lS_i)
         else:
             # single-node multi-device run
             return self.parallel_forward(dense_x, lS_o, lS_i)
@@ -642,19 +645,27 @@ class DLRM_Net(nn.Module):
         ### prepare input (overwrite) ###
         # scatter dense features (data parallelism)
         # print(dense_x.device)
+        print('dense_x.shape', dense_x.shape)
         dense_x = scatter(dense_x, device_ids, dim=0)
+        print('len(dense_x), dense_x[0].shape', len(dense_x), dense_x[0].shape)
         # distribute sparse features (model parallelism)
         if (len(self.emb_l) != len(lS_o)) or (len(self.emb_l) != len(lS_i)):
             sys.exit("ERROR: corrupted model input detected in parallel_forward call")
-
         t_list = []
+
         i_list = []
+        print('self.emb_l[0].weight.shape', self.emb_l[0].weight.shape, 'self.emb_l[0].weight.device', self.emb_l[0].weight.device)
+        print('self.emb_l[1].weight.shape', self.emb_l[1].weight.shape, 'self.emb_l[1].weight.device', self.emb_l[1].weight.device)
+        print('lS_o.shape', lS_o.shape)
         for k, _ in enumerate(self.emb_l):
             d = torch.device("cuda:" + str(k % ndevices))
             t_list.append(lS_o[k].to(d))
             i_list.append(lS_i[k].to(d))
         lS_o = t_list
         lS_i = i_list
+        print('len(lS_o)', len(lS_o), 'lS_o[0].shape', lS_o[0].shape)
+        print('len(lS_o)', len(lS_o), 'lS_o[0].shape', lS_o[1].shape)
+        
 
         ### compute results in parallel ###
         # bottom mlp
@@ -663,15 +674,21 @@ class DLRM_Net(nn.Module):
         # inputs that has been scattered across devices on the first (batch) dimension.
         # The output is a list of tensors scattered across devices according to the
         # distribution of dense_x.
+        print('len(self.bot_l_replicas)',len(self.bot_l_replicas))
         x = parallel_apply(self.bot_l_replicas, dense_x, None, device_ids)
+        
         # debug prints
         # print(x)
 
         # embeddings
+        ####################################
         ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
         # debug prints
         # print(ly)
-
+        print('len(ly)', len(ly))
+        print('len(ly[0])', len(ly[0]), ly[0].device, ly[0][0].shape)
+        print('len(ly[1])', len(ly[1]), ly[1].device, ly[1][0].shape)
+        print('len(ly[2])', len(ly[2]), ly[2].device, ly[2][0].shape)
         # butterfly shuffle (implemented inefficiently for now)
         # WARNING: Note that at this point we have the result of the embedding lookup
         # for the entire batch on each device. We would like to obtain partial results
@@ -684,16 +701,26 @@ class DLRM_Net(nn.Module):
         t_list = []
         for k, _ in enumerate(self.emb_l):
             d = torch.device("cuda:" + str(k % ndevices))
+            print('k', k, 'ly[k].device', ly[k].device)
             y = scatter(ly[k], device_ids, dim=0)
+            # print('y[0].device', y[0].device, 'y[1].device', y[1].device, 'y[2].device', y[2].device,)
             t_list.append(y)
         # adjust the list to be ordered per device
         ly = list(map(lambda y: list(y), zip(*t_list)))
         # debug prints
         # print(ly)
-
+        # print('len(ly)', len(ly))
+        # print('len(ly[0])', len(ly[0]), ly[0][0].device, ly[0][0].shape)
+        # print('len(ly[1])', len(ly[1]), ly[1][0].device, ly[1][0].shape)
+        # print('len(ly[2])', len(ly[2]), ly[2][0].device, ly[2][0].shape)
         # interactions
         z = []
         for k in range(ndevices):
+            print('x[k]\'s device', x[k].device)
+            print('ly[k]\'s device') 
+            print(type(x[k]), x[k][0].device, type(ly[k]), ly[k].device)
+            print(type(x[k]), x[k][1].device, type(ly[k]), ly[k].device)
+            print(type(x[k]), x[k][2].device, type(ly[k]), ly[k].device)
             zk = self.interact_features(x[k], ly[k])
             z.append(zk)
         # debug prints
@@ -708,6 +735,7 @@ class DLRM_Net(nn.Module):
         p = parallel_apply(self.top_l_replicas, z, None, device_ids)
 
         ### gather the distributed results ###
+        print('self.output_d', self.output_d)
         p0 = gather(p, self.output_d, dim=0)
 
         # clamp output if needed
@@ -994,7 +1022,7 @@ def run():
     parser.add_argument("--save-model", type=str, default="")
     parser.add_argument("--load-model", type=str, default="")
     # mlperf logging (disables other output and stops early)
-    parser.add_argument("--mlperf-logging", action="store_true", default=False)
+    parser.add_argument("--mlperf-logging", action="store_true", default=True)
     # stop at target accuracy Kaggle 0.789, Terabyte (sub-sampled=0.875) 0.8107
     parser.add_argument("--mlperf-acc-threshold", type=float, default=0.0)
     # stop at target AUC Terabyte (no subsampling) 0.8025
@@ -1058,6 +1086,7 @@ def run():
         args.test_num_workers = args.num_workers
 
     use_gpu = args.use_gpu and torch.cuda.is_available()
+    print('use_gpu', use_gpu)
 
     if not args.debug_mode:
         ext_dist.init_distributed(
@@ -1251,8 +1280,8 @@ def run():
                     ]
                 )
             )
-            print([S_i.detach().cpu() for S_i in lS_i])
-            print(T.detach().cpu())
+            # print([S_i.detach().cpu() for S_i in lS_i])
+            # print(T.detach().cpu())
 
     global ndevices
     ndevices = min(ngpus, args.mini_batch_size, num_fea - 1) if use_gpu else -1
@@ -1287,8 +1316,8 @@ def run():
     # test prints
     if args.debug_mode:
         print("initial parameters (weights and bias):")
-        for param in dlrm.parameters():
-            print(param.detach().cpu().numpy())
+        # for param in dlrm.parameters():
+        #     print(param.detach().cpu().numpy())
         # print(dlrm)
 
     if use_gpu:
@@ -1306,6 +1335,7 @@ def run():
                     dlrm.v_W_l[k] = w.cuda()
 
     # distribute data parallel mlps
+    #######################
     if ext_dist.my_size > 1:
         if use_gpu:
             device_ids = [ext_dist.my_local_rank]
@@ -1355,7 +1385,10 @@ def run():
         )
 
     ### main loop ###
-
+    print('dlrm.emb_l.device')
+    print(dlrm.emb_l[0].weight.device)
+    print(dlrm.emb_l[1].weight.device)
+    print(dlrm.emb_l[2].weight.device)
     # training or inference
     best_acc_test = 0
     best_auc_test = 0
@@ -1551,7 +1584,7 @@ def run():
 
                     mbs = T.shape[0]  # = args.mini_batch_size except maybe for last
 
-                    # forward pass
+                    # forward pass 
                     Z = dlrm_wrap(
                         X,
                         lS_o,
@@ -1799,8 +1832,8 @@ def run():
     # test prints
     if not args.inference_only and args.debug_mode:
         print("updated parameters (weights and bias):")
-        for param in dlrm.parameters():
-            print(param.detach().cpu().numpy())
+        # for param in dlrm.parameters():
+        #     print(param.detach().cpu().numpy())
 
     # export the model in onnx
     if args.save_onnx:
