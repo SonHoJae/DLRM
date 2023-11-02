@@ -139,3 +139,9 @@ cython_debug/
 
 small_input/
 input
+
+
+run_kaggle_pt
+slurm_history
+sbatch
+mlperf-logging
