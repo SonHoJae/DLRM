@@ -5,7 +5,7 @@ from torch.nn.parallel.parallel_apply import parallel_apply
 from torch.nn.parallel.replicate import replicate
 from torch.nn.parallel.scatter_gather import gather, scatter
 import extend_distributed as ext_dist
-    
+import time
         
 ### define dlrm in PyTorch ###
 class DLRM_Net(nn.Module):
@@ -255,13 +255,19 @@ class DLRM_Net(nn.Module):
             else:
                 #print('sparse_offset_group_batch.device', sparse_offset_group_batch.device)
                 #print('emb_l[', k, '].weight.device', emb_l[k].weight.shape, emb_l[k].weight.device)
+                
                 E = emb_l[k]
+                start_time = time.time()
                 V = E(
                     sparse_index_group_batch,
                     sparse_offset_group_batch,
                     per_sample_weights=per_sample_weights,
                 )
-
+                lookup_elapse = time.time() - start_time
+                print('-----------------------------------')
+                print('k, E.weight.shape, E.weight.device', k, E.weight.shape, E.weight.device)
+                print('lookup_elapse', lookup_elapse)
+                print('-----------------------------------')
                 ly.append(V)
 
         #print('len(ly)', len(ly))

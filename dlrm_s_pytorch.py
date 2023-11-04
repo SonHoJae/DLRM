@@ -391,7 +391,7 @@ def run():
             # early exit if nbatches was set by the user and has been exceeded
             if nbatches > 0 and j >= nbatches:
                 break
-            print("mini-batch: %d" % j)
+            # print("mini-batch: %d" % j)
             #print(X.detach().cpu())
             # transform offsets to lengths when printing
             # print(
@@ -654,7 +654,6 @@ def run():
             k = 0
             total_time_begin = 0
             while k < args.nepochs:
-                print('memory usage', memory_utils.process_memory())
                 
                 if args.mlperf_logging:
                     mlperf_logger.barrier()
@@ -765,6 +764,7 @@ def run():
                         t2 = time_wrap(use_gpu)
                         total_time += t2 - t1
 
+                    print('memory usage', memory_utils.process_memory())
                     total_loss += L * mbs
                     total_iter += 1
                     total_samp += mbs
