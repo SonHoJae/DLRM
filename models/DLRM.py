@@ -452,7 +452,15 @@ class DLRM_Net(nn.Module):
             w_list = []
             for k, emb in enumerate(self.emb_l):
                 d = torch.device("cuda:" + str(k % ndevices))
+                print('-----------------------------------')
+                print('transfer embeddingbag on ', str(d))
+                print(emb)
+                start_time = time.time()
                 t_list.append(emb.to(d))
+                print(emb)
+                lookup_elapse = time.time() - start_time
+                print('lookup_elapse', lookup_elapse)
+                print('-----------------------------------')
                 if self.weighted_pooling == "learned":
                     w_list.append(Parameter(self.v_W_l[k].to(d)))
                 elif self.weighted_pooling == "fixed":
